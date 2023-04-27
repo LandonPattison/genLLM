@@ -1,4 +1,6 @@
 from multiprocessing import freeze_support
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:8000'
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,8 +12,10 @@ import sys
 import os
 from torchtext.data.utils import get_tokenizer
 from torchtext.vocab import build_vocab_from_iterator
+import torch.nn.functional as F
 from typing import Tuple
 
+torch.cuda.empty_cache()
 
 dataset_path = "data.txt"
 split_ratio = 0.8
@@ -50,6 +54,7 @@ class TextCompletionDataset(Dataset):
         input_ids = torch.tensor([self.vocab[token] for token in tokens], dtype=torch.long)
         return input_ids[:-1], input_ids[1:]
 
+print("Uploading data")
 # Load the dataset and preprocess it
 with open(dataset_path, 'r', encoding='utf-8') as f:
     raw_data = f.read()
@@ -62,13 +67,18 @@ train_dataset = TextCompletionDataset(train_data_raw, vocab)
 val_dataset = TextCompletionDataset(val_data_raw, vocab)
 
 batch_size = 64
+from torch.nn.utils.rnn import pad_sequence
+
 def collate_fn(batch):
-  src = torch.cat([x[0] for x in batch], 0)
-  tgt = torch.cat([x[1] for x in batch], 0)
-  return src, tgt
+    src = [x[0] for x in batch]
+    tgt = [x[1] for x in batch]
+    src = pad_sequence(src, batch_first=True, padding_value=vocab['<pad>'])
+    tgt = pad_sequence(tgt, batch_first=True, padding_value=vocab['<pad>'])
+    return src, tgt
 
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, collate_fn=collate_fn)
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
@@ -182,6 +192,7 @@ d_ff = 2048
 dropout = 0.1
 max_len = 5000
 
+print("we go model")
 model = TransformerModel(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len).to(device)
 
 # Set the learning rate scheduler
@@ -197,7 +208,6 @@ scheduler = optim.lr_scheduler.LambdaLR(optim.Adam(model.parameters(), lr=learni
 optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-9)
 criterion = nn.CrossEntropyLoss(ignore_index=vocab['<pad>'])
 
-# Training loop
 def train_loop(model, train_loader, criterion, optimizer, scheduler, device):
     model.train()
     total_loss = 0
@@ -223,11 +233,16 @@ def train_loop(model, train_loader, criterion, optimizer, scheduler, device):
 
         total_loss += loss.item()
 
+        # Free up unused GPU memory
+        torch.cuda.empty_cache()
+
     return total_loss / len(train_loader)
+
 
 
 # Evaluation loop
 def eval_loop(model, val_loader, criterion, device):
+    print("in eval loop")
     model.eval()
     total_loss = 0
 
@@ -250,11 +265,12 @@ def eval_loop(model, val_loader, criterion, device):
 import time
 
 # Train and evaluate the model
-num_epochs = 10
+num_epochs = 20
 best_val_loss = float('inf')
 best_model = None
 save_model_path = 'best_transformer_model.pth'
 
+print("startinge epoch")
 for epoch in range(1, num_epochs + 1):
     start_time = time.time()
 
@@ -272,6 +288,48 @@ for epoch in range(1, num_epochs + 1):
 
 print("Training completed.")
 
+# Load the trained model
+loaded_model = TransformerModel(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len).to(device)
+loaded_model.load_state_dict(torch.load('best_transformer_model.pth'))
+loaded_model.eval()
 
-if __name__ == '__main__':
-    freeze_support()
+def tokenize(text):
+    return [token for token in text.split(' ') if token]
+
+def detokenize(tokens):
+    return ' '.join(tokens)
+
+# Function for generating text completions
+# Function for generating text completions
+# Function for generating text completions
+def generate_completion(model, input_text, max_length=1000, top_k=5, temperature=0.8):
+    input_tokens = tokenize(input_text)
+    input_tensor = torch.tensor([vocab[token] for token in input_tokens], dtype=torch.long).unsqueeze(0).to(device)
+
+    for _ in range(max_length):
+        with torch.no_grad():
+            output = model(input_tensor, input_tensor)
+            output = output.squeeze(0)
+
+        logits = output[-1] / temperature
+        top_k_indices = torch.topk(logits, k=top_k).indices
+
+        # Randomly select one of the top k tokens
+        next_token = top_k_indices[torch.randint(0, top_k, (1,)).item()].item()
+        input_tokens.append(vocab.lookup_token(next_token))
+        input_tensor = torch.tensor([vocab[token] for token in input_tokens], dtype=torch.long).unsqueeze(0).to(device)
+
+        # # Check if the generated token is an end-of-sentence token
+        # if next_token == vocab['<eos>']:
+        #     break
+
+    generated_text = detokenize(input_tokens)
+    return generated_text
+
+
+
+# Test the text completion function
+input_text = "Sebastion:"
+completion = generate_completion(loaded_model, input_text)
+print(f"Generated completion: {completion}")
+
