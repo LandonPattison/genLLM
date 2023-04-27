@@ -11,7 +11,6 @@ vocab = torch.load('vocab.pt')
 
 device = "cuda"
 
-# [Include the necessary functions and classes from the original code here]
 # Instantiate the model
 vocab_size = len(vocab)
 d_model = 512

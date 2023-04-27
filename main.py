@@ -1,6 +1,5 @@
 from multiprocessing import freeze_support
 import os
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:8000'
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -16,7 +15,9 @@ import torch.nn.functional as F
 from typing import Tuple
 from torch.nn.utils.rnn import pad_sequence
 import json
+
 device = "cuda"
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:8000'
 
 # Tokenize the dataset
 def tokenize_data(data: str):
