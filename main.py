@@ -14,11 +14,9 @@ from torchtext.data.utils import get_tokenizer
 from torchtext.vocab import build_vocab_from_iterator
 import torch.nn.functional as F
 from typing import Tuple
-
-torch.cuda.empty_cache()
-
-dataset_path = "data.txt"
-split_ratio = 0.8
+from torch.nn.utils.rnn import pad_sequence
+import json
+device = "cuda"
 
 # Tokenize the dataset
 def tokenize_data(data: str):
@@ -54,31 +52,12 @@ class TextCompletionDataset(Dataset):
         input_ids = torch.tensor([self.vocab[token] for token in tokens], dtype=torch.long)
         return input_ids[:-1], input_ids[1:]
 
-print("Uploading data")
-# Load the dataset and preprocess it
-with open(dataset_path, 'r', encoding='utf-8') as f:
-    raw_data = f.read()
-
-train_data_raw, val_data_raw = split_data(raw_data, split_ratio)
-vocab = create_vocab(train_data_raw)
-
-# Create data loaders
-train_dataset = TextCompletionDataset(train_data_raw, vocab)
-val_dataset = TextCompletionDataset(val_data_raw, vocab)
-
-batch_size = 64
-from torch.nn.utils.rnn import pad_sequence
-
-def collate_fn(batch):
+def collate_fn(batch, vocab):
     src = [x[0] for x in batch]
     tgt = [x[1] for x in batch]
     src = pad_sequence(src, batch_first=True, padding_value=vocab['<pad>'])
     tgt = pad_sequence(tgt, batch_first=True, padding_value=vocab['<pad>'])
     return src, tgt
-
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, collate_fn=collate_fn)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, collate_fn=collate_fn)
-
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
@@ -179,35 +158,6 @@ class TransformerModel(nn.Module):
 
         return self.fc_out(tgt)
 
-
-# Set the device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# Instantiate the model
-vocab_size = len(vocab)
-d_model = 512
-nhead = 8
-num_layers = 6
-d_ff = 2048
-dropout = 0.1
-max_len = 5000
-
-print("we go model")
-model = TransformerModel(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len).to(device)
-
-# Set the learning rate scheduler
-learning_rate = 0.0005
-warmup_steps = 4000
-
-def lr_lambda(step: int):
-    return d_model ** (-0.5) * min((step + 1) ** (-0.5), (step + 1) * warmup_steps ** (-1.5))
-
-scheduler = optim.lr_scheduler.LambdaLR(optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-9), lr_lambda)
-
-# Create the optimizer and loss function
-optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-9)
-criterion = nn.CrossEntropyLoss(ignore_index=vocab['<pad>'])
-
 def train_loop(model, train_loader, criterion, optimizer, scheduler, device):
     model.train()
     total_loss = 0
@@ -261,38 +211,6 @@ def eval_loop(model, val_loader, criterion, device):
 
     return total_loss / len(val_loader)
 
-
-import time
-
-# Train and evaluate the model
-num_epochs = 20
-best_val_loss = float('inf')
-best_model = None
-save_model_path = 'best_transformer_model.pth'
-
-print("startinge epoch")
-for epoch in range(1, num_epochs + 1):
-    start_time = time.time()
-
-    train_loss = train_loop(model, train_loader, criterion, optimizer, scheduler, device)
-    val_loss = eval_loop(model, val_loader, criterion, device)
-
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        best_model = model.state_dict()
-        torch.save(best_model, save_model_path)
-
-    elapsed_time = time.time() - start_time
-
-    print(f'Epoch: {epoch}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Time: {elapsed_time:.2f}s')
-
-print("Training completed.")
-
-# Load the trained model
-loaded_model = TransformerModel(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len).to(device)
-loaded_model.load_state_dict(torch.load('best_transformer_model.pth'))
-loaded_model.eval()
-
 def tokenize(text):
     return [token for token in text.split(' ') if token]
 
@@ -300,9 +218,7 @@ def detokenize(tokens):
     return ' '.join(tokens)
 
 # Function for generating text completions
-# Function for generating text completions
-# Function for generating text completions
-def generate_completion(model, input_text, max_length=1000, top_k=5, temperature=0.8):
+def generate_completion(model, vocab, input_text, max_length=1000, top_k=5, temperature=0.8):
     input_tokens = tokenize(input_text)
     input_tensor = torch.tensor([vocab[token] for token in input_tokens], dtype=torch.long).unsqueeze(0).to(device)
 
@@ -327,9 +243,89 @@ def generate_completion(model, input_text, max_length=1000, top_k=5, temperature
     return generated_text
 
 
+def main(): 
+    torch.cuda.empty_cache()
 
-# Test the text completion function
-input_text = "Sebastion:"
-completion = generate_completion(loaded_model, input_text)
-print(f"Generated completion: {completion}")
+    dataset_path = "data.txt"
+    split_ratio = 0.8
 
+    print("Uploading data")
+    # Load the dataset and preprocess it
+    with open(dataset_path, 'r', encoding='utf-8') as f:
+        raw_data = f.read()
+
+    train_data_raw, val_data_raw = split_data(raw_data, split_ratio)
+    vocab = create_vocab(train_data_raw)
+
+    torch.save(vocab, 'vocab.pt')
+
+    # Create data loaders
+    train_dataset = TextCompletionDataset(train_data_raw, vocab)
+    val_dataset = TextCompletionDataset(val_data_raw, vocab)
+
+    batch_size = 64
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, collate_fn=lambda batch: collate_fn(batch, vocab))
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, collate_fn=lambda batch: collate_fn(batch, vocab))
+    
+    # Set the device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Instantiate the model
+    vocab_size = len(vocab)
+    d_model = 512
+    nhead = 8
+    num_layers = 6
+    d_ff = 2048
+    dropout = 0.1
+    max_len = 5000
+
+    print("we go model")
+    model = TransformerModel(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len).to(device)
+
+    # Set the learning rate scheduler
+    learning_rate = 0.0005
+    warmup_steps = 4000
+
+    def lr_lambda(step: int):
+        return d_model ** (-0.5) * min((step + 1) ** (-0.5), (step + 1) * warmup_steps ** (-1.5))
+
+    scheduler = optim.lr_scheduler.LambdaLR(optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-9), lr_lambda)
+
+    # Create the optimizer and loss function
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-9)
+    criterion = nn.CrossEntropyLoss(ignore_index=vocab['<pad>'])
+
+    import time
+
+    # Train and evaluate the model
+    num_epochs = 1
+    best_val_loss = float('inf')
+    best_model = None
+    save_model_path = 'best_transformer_model.pth'
+
+    print("startinge epoch")
+    for epoch in range(1, num_epochs + 1):
+        start_time = time.time()
+
+        train_loss = train_loop(model, train_loader, criterion, optimizer, scheduler, device)
+        val_loss = eval_loop(model, val_loader, criterion, device)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_model = model.state_dict()
+            torch.save(best_model, save_model_path)
+
+        elapsed_time = time.time() - start_time
+
+        print(f'Epoch: {epoch}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Time: {elapsed_time:.2f}s')
+
+    print("Training completed.")
+
+    # Load the trained model
+    loaded_model = TransformerModel(vocab_size, d_model, nhead, num_layers, d_ff, dropout, max_len).to(device)
+    loaded_model.load_state_dict(torch.load('best_transformer_model.pth'))
+    loaded_model.eval()
+    
+if __name__ == "__main__":
+    freeze_support()
+    main()
