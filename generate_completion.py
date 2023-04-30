@@ -32,6 +32,6 @@ def detokenize(tokens):
     return ' '.join(tokens)
 
 # Test the text completion function
-input_text = "whoremaster"
+input_text = "sebastion: "
 completion = generate_completion(loaded_model, vocab, input_text)
 print(f"Generated completion: {completion}")
